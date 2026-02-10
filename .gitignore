@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (generated at runtime via HITRAN)
+data/
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Models (too large for git)
+models/
+*.pt
+*.pth
+*.onnx
+
+# Outputs
+outputs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
