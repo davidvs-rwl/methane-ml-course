@@ -104,7 +104,7 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 
 ### 2.1 — Beer-Lambert Law Primer
 - The relationship: α = −ln(Iₜ / I₀), where α is absorbance
-- What determines absorbance: absorption coefficient, path length (L), and mole fraction (ξ)
+- What determines absorbance: absorption coefficient, path length (L), and mole fraction (χ)
 - Why absorbance scales linearly with concentration (at moderate optical depths)
 
 ### 2.2 — Tunable Diode Laser Absorption Spectroscopy (TDLAS)
@@ -114,8 +114,8 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - Why we chose the 4383–4386 cm⁻¹ region for CH₄ (three transitions spanning ~1 order of magnitude in peak absorbance, minimal interference from H₂O, CO₂, CO)
 
 ### 2.3 — From Physics to Data: What the CNN Will Learn
-- The forward problem: (T, P, ξ) → absorbance spectrum → detector voltage trace
-- The inverse problem the CNN solves: detector voltage trace + (T, P) → ξ
+- The forward problem: (T, P, χ) → absorbance spectrum → detector voltage trace
+- The inverse problem the CNN solves: detector voltage trace + (T, P) → χ
 - Why ML is attractive here: eliminating manual baseline fitting, handling high-absorbance regimes
 
 **Deliverable:** Conceptual understanding. No code yet — just notebook markdown cells with equations and diagrams.
@@ -131,20 +131,20 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 
 ### 3.2 — Generating a Single Absorbance Spectrum
 - Walkthrough of the simulation function:
-  - Setting parameters: T (K), P (atm), ξ (mole fraction), L (cm), wavenumber range, step size
+  - Setting parameters: T (K), P (atm), χ (mole fraction), L (cm), wavenumber range, step size
   - Using cached HITRAN line data for CH₄ (molecule 6, isotope 1)
   - Computing Voigt absorption coefficients
-  - Converting to absorbance: α = coef × L × ξ
+  - Converting to absorbance: α = coef × L × χ
 - Plotting ν vs. absorbance in Jupyter
 - Saving to CSV with the naming convention: `TTT-P_P-LLLL-XXXXX.csv`
 
 ### 3.3 — Exploring Parameter Sensitivity
-- Interactive notebook: vary T, P, and ξ individually and observe changes in line shape and peak height
+- Interactive notebook: vary T, P, and χ individually and observe changes in line shape and peak height
 - Pressure broadening effects (Voigt profile widening)
 - Temperature effects on line strength via partition function changes
 - Mole fraction scaling (linear in α)
 
-**Deliverable:** Notebook that generates and visualizes absorbance spectra for arbitrary (T, P, ξ) conditions.
+**Deliverable:** Notebook that generates and visualizes absorbance spectra for arbitrary (T, P, χ) conditions.
 
 ---
 
@@ -172,7 +172,7 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - Timing comparison: loop vs. vectorized on a single scan
 - This optimization is critical for generating 1M scans
 
-**Deliverable:** Notebook producing a complete simulated detector trace from any (T, P, ξ) input.
+**Deliverable:** Notebook producing a complete simulated detector trace from any (T, P, χ) input.
 
 ---
 
@@ -182,11 +182,11 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - Mole fraction range: 1–50,000 ppm (log-uniform or linear-uniform sampling)
 - Temperature range: 253–323 K (−20°C to 50°C)
 - Pressure range: 0.8–1.1 atm
-- Random sampling strategy for (T, P, ξ) per scan
+- Random sampling strategy for (T, P, χ) per scan
 - Discussion: why 1M scans (vs. the original 50K), and the role of dataset size in CNN generalization
 
 ### 5.2 — Parallelizing with Multiprocessing
-- Why this is CPU-bound (HITRAN Voigt calculations are NumPy, not GPU)
+- Why this is CPU-bound (HAPI Voigt calculations are NumPy, not GPU)
 - Using Python `multiprocessing.Pool` with batch chunking
 - Writing results incrementally to HDF5 (`h5py`) to manage memory
 - HDF5 dataset structure: `nu`, `a` (or `I_t`), `T`, `P`, `xi`
@@ -197,13 +197,85 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - Spot-checking: randomly sample and plot a few scans to verify correctness
 - Final dataset size and storage considerations
 
+### 5.3b — CPU Benchmark: Local Machine vs. Multi-CPU DigitalOcean Droplet
+
+This sub-section provides a practical comparison of dataset generation performance across compute environments, giving learners an intuition for when and why cloud compute matters.
+
+- **Defining the benchmark:** Generate a fixed subset of scans (e.g., 1,000 or 10,000) using the identical `multiprocessing.Pool` code from 5.2, on both a local machine (e.g., MacBook with Apple Silicon or Intel) and a multi-CPU DigitalOcean droplet (AMD EPYC)
+- **Instrumentation:** Wrapping the generation pipeline with `time.perf_counter` for wall-clock time; recording `multiprocessing.cpu_count()`, per-core timing, and memory usage via `psutil`
+- **Local machine run:** Documenting core count, architecture (e.g., M-series ARM vs. Intel x86), and observed generation throughput (scans/second)
+- **Cloud droplet run:** Selecting a CPU-optimized DigitalOcean droplet (e.g., 16- or 32-core AMD EPYC), running the same benchmark, and recording throughput
+- **Results comparison table:**
+  - Wall-clock time for N scans
+  - Scans per second
+  - Scans per core per second (normalized efficiency)
+  - Estimated time to generate the full 1M dataset on each platform
+- **Cost analysis:** Local machine "costs" nothing beyond electricity, but may take days; the cloud droplet costs $/hour but finishes in hours — calculating the break-even and total cost for the 1M generation job
+- **Key takeaway:** The generation step is embarrassingly parallel and scales nearly linearly with core count, making a multi-CPU cloud instance a cost-effective choice for the one-time dataset generation task
+
 ### 5.4 — Dataset Normalization Strategy
 - Absorbance: global min-max normalization across all scans
 - T and P: min-max to [0, 1]
 - Mole fraction target: raw ppm (regression target)
 - Why these choices matter for convergence
 
-**Deliverable:** A `dataset_1M.h5` file containing 1M simulated scans ready for training.
+### 5.5 — (Optional) GPU-Accelerated Voigt Calculation with PyTorch
+
+This optional section reimplements the core Voigt profile computation in pure PyTorch tensor operations, bypassing HAPI entirely and enabling GPU-accelerated dataset generation on the AMD MI300X.
+
+#### 5.5.1 — Why Bypass HAPI?
+- Recap: HAPI's `absorptionCoefficient_Voigt()` is CPU-bound NumPy code
+- The Voigt profile is mathematically well-defined — we only need HITRAN's *line parameters* (line center ν₀, line intensity S, air-broadened half-width γ_air, self-broadened half-width γ_self, lower-state energy E″, temperature-dependence exponent n_air), not HAPI's computation engine
+- By extracting these parameters once and encoding them as PyTorch tensors, the entire absorption coefficient calculation can run on the GPU
+
+#### 5.5.2 — Extracting Line Parameters from HITRAN
+- Using HAPI's `getColumns()` or reading the `.par` file directly to extract per-line parameters for CH₄ in the 4383–4386 cm⁻¹ region
+- Building a parameter tensor of shape `(num_lines, 6)`: `[ν₀, S_ref, γ_air, γ_self, E_lower, n_air]`
+- Reference conditions: S_ref at T_ref = 296 K, P_ref = 1 atm
+
+#### 5.5.3 — Implementing Voigt Profile in PyTorch
+- **Temperature & pressure corrections (vectorized over all lines simultaneously):**
+  - Line intensity scaling: S(T) = S_ref × Q(T_ref)/Q(T) × exp(−c₂E″(1/T − 1/T_ref)) × [1 − exp(−c₂ν₀/T)] / [1 − exp(−c₂ν₀/T_ref)]
+  - Lorentzian half-width: γ_L = (T_ref/T)^n_air × (γ_air × (P − P_self) + γ_self × P_self)
+  - Gaussian half-width: γ_D = (ν₀/c) × √(2kT ln2 / m)
+- **Faddeeva function approximation:**
+  - The Voigt profile V(ν) ∝ Re[w(z)] where z = (ν − ν₀ + iγ_L) / (γ_D √2)
+  - Implementing the Humlíček (1982) rational approximation or the Weideman (1994) 32-term approximation in pure PyTorch operations
+  - Key insight: `torch.complex()` and standard tensor arithmetic are sufficient — no custom CUDA/HIP kernels needed
+- **Batched evaluation:**
+  - Build a 2D grid of shape `(num_lines, num_wavenumber_points)` for the complex argument z
+  - Evaluate the Faddeeva approximation across the entire grid in one batched operation
+  - Sum contributions across the line axis → absorption coefficient at each wavenumber point
+  - Multiply by path length and mole fraction → absorbance spectrum
+
+#### 5.5.4 — Partition Function Handling
+- HITRAN's total internal partition function Q(T) is needed for temperature correction
+- Options: use HAPI's `partitionSum()` to pre-compute a lookup table at discrete temperatures, or fit a polynomial approximation and encode it as a PyTorch operation
+- For CH₄ over 253–323 K, a 3rd- or 4th-order polynomial fit is typically sufficient
+
+#### 5.5.5 — Validation Against HAPI
+- Generate absorbance spectra for a set of test conditions using both the HAPI reference implementation and the new PyTorch implementation
+- Compare with `torch.allclose()` at various tolerances (1e-4 relative is a reasonable target)
+- Plot overlay comparisons and residuals
+- Discuss sources of small numerical differences (Faddeeva approximation order, floating-point precision, partition function interpolation)
+
+#### 5.5.6 — Benchmarking: CPU HAPI vs. GPU PyTorch
+- Timing comparison for single-scan generation
+- Batch generation: generate 1,000 scans simultaneously by adding a batch dimension — shape `(batch, num_lines, num_wavenumber_points)`
+- GPU memory considerations: how large a batch fits on the MI300X (192 GB HBM3)?
+- Throughput comparison table: HAPI single-core, HAPI multiprocessing (N cores), PyTorch GPU
+- Extrapolating to 1M scans: estimated wall-clock time and cost on the GPU droplet
+- Discussion: when the GPU approach pays off vs. when CPU multiprocessing is "good enough"
+
+#### 5.5.7 — Integrating GPU Voigt into the Dataset Pipeline
+- Replacing the HAPI call in the scan generation pipeline with the PyTorch Voigt function
+- Generating the full 1M dataset on GPU: batched generation loop with HDF5 incremental writes
+- Note: the detector trace simulation (Module 4) can also be expressed as tensor operations, making the *entire* forward model GPU-native
+- Verifying the GPU-generated dataset against a HAPI-generated reference subset
+
+**Deliverable (Main):** A `dataset_1M.h5` file containing 1M simulated scans ready for training.
+
+**Deliverable (Optional 5.5):** A validated PyTorch Voigt implementation with benchmark results, and optionally a GPU-generated dataset.
 
 ---
 
@@ -271,7 +343,7 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - Moving to GPU for fast batch inference or CPU for single-scan inference
 
 ### 8.2 — Running Inference on a Single Scan
-- Generating a new scan at known (T, P, ξ) that was NOT in the training set
+- Generating a new scan at known (T, P, χ) that was NOT in the training set
 - Preprocessing: same normalization pipeline used during training
 - Forward pass → predicted mole fraction in ppm
 - Comparing predicted vs. actual
@@ -284,7 +356,7 @@ Managing cloud costs is critical — GPU instances cost ~$1.99/hour even when po
 - MAE and RMSE summary statistics
 
 ### 8.4 — Stress-Testing the Model
-- Extrapolation: what happens with ξ outside the training range?
+- Extrapolation: what happens with χ outside the training range?
 - Noise injection: adding Gaussian noise to the detector trace to simulate real sensor noise
 - Sensitivity to T and P errors: how wrong can the provided T, P be before predictions degrade?
 
